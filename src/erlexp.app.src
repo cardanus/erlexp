@@ -1,0 +1,11 @@
+{application, erlexp, [
+    {description, "Erlang client for Cardanus platform"},
+    {vsn, "0.0.1"},
+    {id, "erlexp"}, 
+    {modules, []},
+    {registered, [erlexp]},
+    {applications, [kernel, stdlib, lager, sasl]},
+    {included_applications, []},
+    {mod, {erlexp_app, []}},
+    {env, []}
+]}.
