@@ -5,6 +5,8 @@
     -compile(export_all).
 -endif.
 
+-define(ETSNAME, ?MODULE).
+
 -include("erlexp.hrl").
 %-include("deps/teaser/include/utils.hrl").
 
@@ -17,7 +19,9 @@
 
 % public api
 -export([
-        start/1, stop/1, stop/2
+        start/1, stop/1, stop/2,
+        seed/2,
+        is_active/2
     ]).
 
 -export_type([start_options/0]).
@@ -29,12 +33,8 @@
     Pid         :: pid(),
     Error       :: {already_started, Pid} | term().
 
-start(#{'register' := Register} = Options) ->
-    gen_server:start_link(Register, ?MODULE, Options, []);
-
-% non-registered gen_server here mostly used for tests
 start(Options) ->
-    gen_server:start_link(?MODULE, Options, []).
+    gen_server:start_link(?MODULE, ?MODULE, Options, []);
 
 % @doc API for stop gen_server. Default is sync call.
 -spec stop(Server) -> Result when
@@ -55,13 +55,40 @@ stop('sync', Server) ->
 stop('async', Server) ->
     gen_server:cast(Server, stop).
 
+-spec is_active(StickId, ExpId) -> Result when
+    StickId     :: stick_id(),
+    ExpId       :: experiment_id(),
+    Result      :: boolean().
+
+is_active(StickId, ExpId) ->
+    is_active(
+      ets:lookup(?ETSNAME, alloc_key(StickId, ExpId)),
+      StickId,
+      ExpId
+     ).
+
+is_active([], StickId, ExpId) ->
+    gen_server:call(?SERVER, {'allocate', StickId, ExpId}).
+
 % ============================ gen_server part =================================
 
 init(Options) ->
-    AllocationHeartbeatFreq = maps:get('seed_freq', Options, 1000),
-    AllocationQty = maps:get('seed_qty', Options, 1000),
+    SeedFreq = maps:get('seed_freq', Options, 1000),
+    SeedQty = maps:get('seed_qty', Options, 1000),
+    SeedThrUpper = maps:get('seed_threshold_upper', Options, 100000),
+    SeedThrLower = maps:get('seed_threshold_lower', Options, 100),
+    SelfPid = self(),
 
-    {ok, #erlexp_state{}}.
+    {ok, #erlexp_state{
+            seed_freq = SeedFreq,
+            seed_qty = SeedQty,
+            seed_threshold_upper = SeedThrUpper,
+            seed_threshold_lower = SeedThrLower,
+            seed_tref = timer:apply_interval(SeedFreq, ?MODULE, seed, [SeedQty, SelfPid]),
+            self_pid = SelfPid,
+            ets = ets:new(?ETSNAME, [set, ?ETSOPT, {keypos, #allocations.alloc_key}, named_table])
+        }
+    }.
 
 %============ handle_call =================
 
@@ -72,6 +99,10 @@ init(Options) ->
     Tag         :: term(),
     State       :: erlexp_state(),
     Result      :: {reply, term(), State}.
+
+handle_call({'allocate', StickId, ExpId}, _From, State#erlexp_state{ets = Ets, variants = [Variant | T]}) ->
+    {reply, Variant, State#erlexp_state{variants = T}};
+
 
 % handle_call for all other thigs
 handle_call(Msg, _From, State) ->
@@ -87,6 +118,23 @@ handle_call(Msg, _From, State) ->
     Message :: accepted_messages(),
     State   :: erlexp_state(),
     Result  :: {noreply, State} | {stop, normal, State}.
+
+% handle_cast for seed
+handle_cast({seed, Variants},
+    #erlexp_state{
+        variants = OldVariants,
+        seed_threshold_upper = Threshold
+} = State) when length(OldVariants) < Threshold ->
+    {noreply, State#erlexp_state{
+        variants = lists:foldl(fun(Variant, Acc) -> [Variant | Acc] end, OldVariants, Variants)
+    }};
+
+handle_cast({seed, _Variants},
+    #erlexp_state{
+       variants = OldVariants,
+       seed_threshold_upper = Threshold
+} = State) ->
+    ?info("Got seed message when upper threshold is ~p, but we still have ~p variants",[Threshold, OldVariants]);
 
 % handle_cast for stop
 handle_cast(stop, State) ->
@@ -139,12 +187,18 @@ code_change(_OldVsn, State, _Extra) ->
 
 % ================================= internals ==================================
 
--spec seed(Qty) -> Result when
-    Qty       :: pos_integer(),
-    Result    :: [variant()].
+-spec seed(Qty, SendTo) -> Result when
+    Qty         :: pos_integer(),
+    SendTo      :: pid(),
+    Result      :: [variant()].
 
-seed(Qty) ->
-    [crypto:rand_uniform(0, 2) || _ <- lists:seq(1, Qty)].
+seed(Qty, SendTo) ->
+    gen_server:cast(SendTo, {seed, [crypto:rand_uniform(0, 2) || _ <- lists:seq(1, Qty)]}).
+
+-spec alloc_key(StickId, ExpId) -> alloc_key().
+
+alloc_key(StickId, ExpId) -> {StickId, ExpId}.
 
 % ------------------------------- end of internals -----------------------------
+
 
