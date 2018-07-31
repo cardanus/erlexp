@@ -36,16 +36,10 @@ DEPS = lager
 SHELL_DEPS = sync teaser
 
 # --------------------------------------------------------------------
-# Development enviroment ("make shell" to run it).
+# Development enviroment for TDD ("make shell" to run it).
 # --------------------------------------------------------------------
 
 SHELL_OPTS = -kernel shell_history enabled -args_file vm.args.development -config sys.config -pa ebin/ test/ -eval 'lager:start(), mlibs:discover()' -env ERL_LIBS deps -run mlibs autotest_on_compile
-
-# --------------------------------------------------------------------
-# Configuration for RELX
-# --------------------------------------------------------------------
-
-RELX_REPLACE_OS_VARS = true
 
 # --------------------------------------------------------------------
 # We using erlang.mk 
