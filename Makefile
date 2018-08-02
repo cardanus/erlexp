@@ -27,13 +27,13 @@ TEST_ERLC_OPTS += +debug_info
 
 # 3rd party
 dep_lager = git https://github.com/erlang-lager/lager				master
+dep_teaser = git https://github.com/spylik/teaser                   develop
 # 3rd party dev only
 dep_sync = git https://github.com/rustyio/sync						master
-dep_teaser = git https://github.com/spylik/teaser                   develop
 
-DEPS = lager
+DEPS = lager teaser
 
-SHELL_DEPS = sync teaser
+SHELL_DEPS = sync
 
 # --------------------------------------------------------------------
 # Development enviroment for TDD ("make shell" to run it).
