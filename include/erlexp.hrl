@@ -5,8 +5,8 @@
 -type alloc_key()       :: {uid(), experiment_id()}.
 -type server()          :: atom() | pid().
 
--type variant()         :: a | b.
--type alloc_rate()      :: 0..100.
+-type variant()         :: a | b | z.  % z is when experiment not yet active
+-type alloc_rate()      :: 0..1.
 
 -type start_options()   :: #{
     'transport_module'              => module(),
@@ -40,8 +40,9 @@
 % record for keeping experiments
 -record(experiments, {
         id                          :: experiment_id(),
+        active                      :: boolean(),
         b_probability               :: alloc_rate(),
-        last_seed_state             :: rand:state(),
+        last_seed_state = undefined :: undefined | rand:state(),
         current_v_qty               :: non_neg_integer(),
         variants                    :: [variant()]
     }).
