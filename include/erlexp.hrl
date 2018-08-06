@@ -5,7 +5,9 @@
 -type alloc_key()       :: {uid(), experiment_id()}.
 -type server()          :: atom() | pid().
 
--type variant()         :: a | b | z.  % z is when experiment not yet active
+-type seed_msg()        :: {seed, experiment_id(), {rand:state(), [variant()]}}.
+
+-type variant()         :: a | b.
 -type alloc_rate()      :: 0..1.
 
 -type start_options()   :: #{

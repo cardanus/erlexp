@@ -29,7 +29,7 @@
 % public api
 -export([
         start/1, stop/1, stop/2,
-        seed/2,
+        seed/1,
         variant/2
     ]).
 
@@ -70,22 +70,27 @@ stop('async', Server) ->
     Result      :: variant().
 
 variant(UId, ExpId) ->
-    variant(UId, ExpId, undefined);
+    variant(UId, ExpId, undefined).
 
 % ============================ gen_server part =================================
 
+-spec init(Options) -> Result when
+    Options :: start_options(),
+    Result  :: {'ok', erlexp_state()}.
+
 init(Options) ->
+    SeedFreq = maps:get('seed_freq', Options, 1000),
     State = #erlexp_state{
-            seed_freq = maps:get('seed_freq', Options, 1000),
+            seed_freq = SeedFreq,
             seed_qty = maps:get('seed_qty', Options, 1000),
             seed_threshold_upper = maps:get('seed_threshold_upper', Options, 100000),
             seed_threshold_lower = maps:get('seed_threshold_lower', Options, 500),
             self_pid = self(),
             alloc_ets = ets:new(?ETS_ALLOC_NAME, [set, ?ETSOPT, {keypos, #allocations.alloc_key}, named_table]),
             exps_ets = ets:new(?ETS_EXPS_NAME, [set, ?ETSOPT, {keypos, #experiments.id}, named_table])
-        }
+        },
     {ok, State#erlexp_state{
-            seed_tref = timer:apply_interval(SeedFreq, ?MODULE, seed, [State]),
+            seed_tref = timer:apply_interval(SeedFreq, ?MODULE, seed, [State])
         }
     }.
 
@@ -99,8 +104,8 @@ init(Options) ->
     State       :: erlexp_state(),
     Result      :: {reply, term(), State}.
 
-handle_call({'allocate', UId, ExpId}, _From, #erlexp_state{exps_ets = ExpEts, alloc_ets = AllocEts} = State) ->
-    {reply, variant(UId, ExpId), State};
+handle_call({'allocate', UId, ExpId}, _From, State) ->
+    {reply, variant(UId, ExpId, State), State};
 
 % handle_call for all other thigs
 handle_call(Msg, _From, State) ->
@@ -190,9 +195,13 @@ code_change(_OldVsn, State, _Extra) ->
 
 % it is possible that we try to seed new data when before previus seeding completed.
 % so, we avoiding collision here just by registering process.
+-spec seed(State) -> Result when
+    State       :: erlexp_state(),
+    Result      :: seed_msg().
+
 seed(#erlexp_state{seed_threshold_upper = ThrshUp, exps_ets = Ets} = State) ->
     try
-        true = register(?SEED_SERVER, ?self()),  % fail here if we already running
+        true = register(?SEED_SERVER, self()),  % fail here if we already running
         MS = [{#experiments{current_v_qty = '$1', 'b_probability' = '$2', active = true, _ = '_'},
                {'andalso',
                     {'<', '$1', ThrshUp},
@@ -203,7 +212,7 @@ seed(#erlexp_state{seed_threshold_upper = ThrshUp, exps_ets = Ets} = State) ->
                },
             ['$_']
         }],
-        seed(ets:select(Ets, MS))
+        seed(ets:select(Ets, MS), State)
     catch
         Error ->
             ?error(Error)
@@ -211,14 +220,14 @@ seed(#erlexp_state{seed_threshold_upper = ThrshUp, exps_ets = Ets} = State) ->
 
 
 -spec seed(Experiments, State) -> Result when
-    Experiments :: [] | [experiment()],
-    SendTo      :: erlexp_state(),
-    Result      :: term().
+    Experiments :: [] | [experiments()],
+    State       :: erlexp_state(),
+    Result      :: [] | [seed_msg()].
 
-seed(Experiments, #erlexp_state{exps_ets = Ets, seed_qty = Qty, self_pid = SelfPid} = State) ->
+seed(Experiments, #erlexp_state{seed_qty = Qty, self_pid = SelfPid}) ->
     lists:map(fun
-        (#experiments{id = ExpId, b_probability = Probability, last_seed_state = SeedState]}) ->
-            SelfPid ! {seed, ExpId, seed_with_state(SeedState, Probability, Qty, []}
+        (#experiments{id = ExpId, b_probability = Probability, last_seed_state = SeedState}) ->
+            SelfPid ! {seed, ExpId, seed_with_state(SeedState, Probability, Qty, [])}
         end,
     Experiments).
 
@@ -228,47 +237,58 @@ seed(Experiments, #erlexp_state{exps_ets = Ets, seed_qty = Qty, self_pid = SelfP
 % To perform uniform distribution with acceptance level of granularity we have to deal with the seed state.
 % @end
 
-seed_with_state(State, 1, Qty, Acc) -> {State, [b || _ <- lists:seq(1, 10)]}; % don't use rand for 100% probability
-seed_with_state(State, 0, Qty, Acc) -> {State, [a || _ <- lists:seq(1, 10)]}; % don't use rand for 0% probability
-seed_with_state({NewState, Number}, Probability, Qty, Acc) when Number =< Probability ->
-    seed_with_state(NewState, Probability, Qty-1, [b | Acc]);
-seed_with_state({NewState, Number}, Probability, Qty, Acc) ->
-    seed_with_state(NewState, Probability, Qty-1, [a | Acc]);
+-spec seed_with_state(SeedStateOrNumber, Probability, Qty, Acc) -> Result when
+    SeedStateOrNumber   :: rand:state() | {0..1, rand:state()},
+    Probability         :: alloc_rate(),
+    Qty                 :: non_neg_integer(),
+    Acc                 :: [] | [a | b],
+    Result              :: {rand:state(), [variant()] | []}.
+
+seed_with_state(SeedState, 1, Qty, _Acc) -> {SeedState, [b || _ <- lists:seq(1, Qty)]}; % don't use rand for 100% probability
+seed_with_state(SeedState, 0, Qty, _Acc) -> {SeedState, [a || _ <- lists:seq(1, Qty)]}; % don't use rand for 0% probability
+
+seed_with_state({Number, NewSeedState}, Probability, Qty, Acc) when Number =< Probability ->
+    seed_with_state(NewSeedState, Probability, Qty-1, [b | Acc]);
+seed_with_state({_Number, NewSeedState}, Probability, Qty, Acc) ->
+    seed_with_state(NewSeedState, Probability, Qty-1, [a | Acc]);
+
 seed_with_state(undefined, Probability, Qty, Acc) ->
     seed_with_state(rand:seed(?DEF_ALGO), Probability, Qty, Acc);
-seed_with_state(NewState, _Probability, 0, Acc) -> {NewState, Acc};
+
+seed_with_state(NewSeedState, _Probability, 0, Acc) -> {NewSeedState, Acc};
+
 seed_with_state(State, Probability, Qty, Acc) ->
     seed_with_state(rand:uniform_real_s(State), Probability, Qty, Acc).
 
-% @doc function for adapt number to probability rate.
-% The main idea that we can define probability in percent (eg 10%). It should
-% automatically convert to the 0 < N < 1 format.
-% In case if number passed correctly, we returning "as-is".
-% We also filtering here numbers which not in our range.
-% @end
-
--spec verify_probability(Number) -> Result when
-      Number    :: integer() | float(),
-      Result    :: float() | {error, term}.
-
-verify_probability(Number) when Number < 0 ->
-    {error,
-        {
-            probability_less_than_0,
-            io_lib:format("Given number ~p is less than 0.",[Number])
-        }
-    };
-verify_probability(Number) when Number > 100 ->
-    {error,
-        {
-            probability_more_than_100,
-            io_lib:format("Given number ~p is less than 0.",[Number])
-        }
-    };
-verify_probability(Number) when Number =< 1 -> Number;
-
-verify_probability(Number) ->
-   verify_probability(Number / 100).
+%% @doc function for adapt number to probability rate.
+%% The main idea that we can define probability in percent (eg 10%). It should
+%% automatically convert to the 0 < N < 1 format.
+%% In case if number passed correctly, we returning "as-is".
+%% We also filtering here numbers which not in our range.
+%% @end
+%
+%-spec verify_probability(Number) -> Result when
+%      Number    :: integer() | float(),
+%      Result    :: float() | {error, term}.
+%
+%verify_probability(Number) when Number < 0 ->
+%    {error,
+%        {
+%            probability_less_than_0,
+%            io_lib:format("Given number ~p is less than 0.",[Number])
+%        }
+%    };
+%verify_probability(Number) when Number > 100 ->
+%    {error,
+%        {
+%            probability_more_than_100,
+%            io_lib:format("Given number ~p is less than 0.",[Number])
+%        }
+%    };
+%verify_probability(Number) when Number =< 1 -> Number;
+%
+%verify_probability(Number) ->
+%   verify_probability(Number / 100).
 
 % @doc generate allocation key
 -spec alloc_key(UId, ExpId) -> Result when
@@ -281,7 +301,10 @@ alloc_key(UId, ExpId) -> {UId, ExpId}.
 
 % @doc get variant
 -spec variant(UId, ExpId, State) -> Result when
-
+    UId         :: uid(),
+    ExpId       :: experiment_id(),
+    State       :: erlexp_state(),
+    Result      :: variant().
 
 variant(UId, ExpId, State) ->
     variant(
@@ -291,12 +314,19 @@ variant(UId, ExpId, State) ->
       State
      ).
 
+-spec variant(Allocations, UId, ExpId, State) -> Result when
+    Allocations :: [allocations()],
+    UId         :: uid(),
+    ExpId       :: experiment_id(),
+    State       :: erlexp_state(),
+    Result      :: variant().
+
 variant([#allocations{variant = Variant}], _UId, _ExpId, _State) -> Variant;
 
 variant([], UId, ExpId, State) ->
     case ets:lookup(?ETS_EXPS_NAME, ExpId) of
-        [] -> z;
-        [#experiments{active = false}] -> z;
+        [] -> a;
+        [#experiments{active = false}] -> a;
         _ when State =:= undefined ->
             gen_server:call(?SERVER, {'allocate', UId, ExpId});
         [#experiments{b_probability = 0}] ->
@@ -304,17 +334,22 @@ variant([], UId, ExpId, State) ->
         [#experiments{b_probability = 1}] ->
             stick(UId, ExpId, b, State);
         [#experiments{variants = [Variant|T], current_v_qty = Qty} = Experiment] ->
-            ets:insert(State#erlexp_state.exps_ets, Experiment##experiments{variants = T, current_v_qty = Qty-1}),
-            stick(UId, ExpId, Variant, State);
+            ets:insert(State#erlexp_state.exps_ets, Experiment#experiments{variants = T, current_v_qty = Qty-1}),
+            stick(UId, ExpId, Variant, State)
     end.
 
 -spec stick(UId, ExpId, Variant, State) -> Result when
+    UId         :: uid(),
+    ExpId       :: experiment_id(),
+    Variant     :: variant(),
+    State       :: erlexp_state(),
+    Result      :: variant().
 
 stick(UId, ExpId, Variant, #erlexp_state{alloc_ets = Ets, transport_module = TransportModule}) ->
     ToStick = #allocations{alloc_key = alloc_key(UId, ExpId), variant = Variant},
     ets:insert_new(Ets, ToStick),
     erlang:spawn(TransportModule, ?FUNCTION_NAME, [ToStick]),
-    Variant;
+    Variant.
 
 % ------------------------------- end of internals -----------------------------
 
