@@ -43,7 +43,7 @@
     Error       :: {already_started, Pid} | term().
 
 start(Options) ->
-    gen_server:start_link(?MODULE, ?MODULE, Options, []).
+    gen_server:start_link({'local', ?MODULE}, ?MODULE, Options, []).
 
 % @doc API for stop gen_server. Default is sync call.
 -spec stop(Server) -> Result when
@@ -89,8 +89,9 @@ init(Options) ->
             alloc_ets = ets:new(?ETS_ALLOC_NAME, [set, ?ETSOPT, {keypos, #allocations.alloc_key}, named_table]),
             exps_ets = ets:new(?ETS_EXPS_NAME, [set, ?ETSOPT, {keypos, #experiments.id}, named_table])
         },
+    {ok, Tref} = timer:apply_interval(SeedFreq, ?MODULE, seed, [State]),
     {ok, State#erlexp_state{
-            seed_tref = timer:apply_interval(SeedFreq, ?MODULE, seed, [State])
+            seed_tref = Tref
         }
     }.
 
@@ -124,7 +125,7 @@ handle_call(Msg, _From, State) ->
 
 % handle_cast for seed
 handle_cast({seed, ExpId, {NewSeedState, Variants}},#erlexp_state{exps_ets = Ets} = State) ->
-    Experiment = ets:lookup(Ets, ExpId),
+    [Experiment] = ets:lookup(Ets, ExpId),
     NewVariants = lists:foldl(fun(Variant, Acc) -> [Variant | Acc] end, Experiment#experiments.variants, Variants),
     ets:insert(Ets,
         Experiment#experiments{
@@ -167,7 +168,7 @@ handle_info(Msg, State) ->
     State       :: erlexp_state().
 
 terminate(Reason, #erlexp_state{seed_tref = SeedTref}= State) ->
-    timer:cancel(SeedTref),
+    _ = timer:cancel(SeedTref),
     {noreply, Reason, State#erlexp_state{seed_tref = undefined}}.
 
 % @doc call back for gen_server code_change
@@ -197,26 +198,26 @@ code_change(_OldVsn, State, _Extra) ->
 % so, we avoiding collision here just by registering process.
 -spec seed(State) -> Result when
     State       :: erlexp_state(),
-    Result      :: seed_msg().
+    Result      :: [] | [seed_msg()].
 
 seed(#erlexp_state{seed_threshold_upper = ThrshUp, exps_ets = Ets} = State) ->
-    try
+%    try
         true = register(?SEED_SERVER, self()),  % fail here if we already running
         MS = [{#experiments{current_v_qty = '$1', 'b_probability' = '$2', active = true, _ = '_'},
-               {'andalso',
+               [{'andalso',
                     {'<', '$1', ThrshUp},
                     {'orelse',
                         {'==', '$2', '0'},
                         {'==', '$2', '1'}
                     }
-               },
+               }],
             ['$_']
         }],
-        seed(ets:select(Ets, MS), State)
-    catch
-        Error ->
-            ?error(Error)
-    end.
+        seed(ets:select(Ets, MS), State).
+%    catch
+%        Error ->
+%            ?error(Error)
+%    end.
 
 
 -spec seed(Experiments, State) -> Result when
@@ -238,18 +239,20 @@ seed(Experiments, #erlexp_state{seed_qty = Qty, self_pid = SelfPid}) ->
 % @end
 
 -spec seed_with_state(SeedStateOrNumber, Probability, Qty, Acc) -> Result when
-    SeedStateOrNumber   :: rand:state() | {0..1, rand:state()},
+    SeedStateOrNumber   :: undefined | rand:state() | {float(), rand:state()},
     Probability         :: alloc_rate(),
     Qty                 :: non_neg_integer(),
     Acc                 :: [] | [a | b],
     Result              :: {rand:state(), [variant()] | []}.
 
-seed_with_state(SeedState, 1, Qty, _Acc) -> {SeedState, [b || _ <- lists:seq(1, Qty)]}; % don't use rand for 100% probability
-seed_with_state(SeedState, 0, Qty, _Acc) -> {SeedState, [a || _ <- lists:seq(1, Qty)]}; % don't use rand for 0% probability
+seed_with_state(SeedState, Probability, Qty, _Acc) when Probability == 1 ->
+    {SeedState, [b || _ <- lists:seq(1, Qty)]}; % don't use rand for 100% probability
+seed_with_state(SeedState, Probability, Qty, _Acc) when Probability == 0 ->
+    {SeedState, [a || _ <- lists:seq(1, Qty)]}; % don't use rand for 0% probability
 
-seed_with_state({Number, NewSeedState}, Probability, Qty, Acc) when Number =< Probability ->
+seed_with_state({Number, {#{}, _} = NewSeedState}, Probability, Qty, Acc) when Number =< Probability ->
     seed_with_state(NewSeedState, Probability, Qty-1, [b | Acc]);
-seed_with_state({_Number, NewSeedState}, Probability, Qty, Acc) ->
+seed_with_state({_Number, {#{}, _} = NewSeedState}, Probability, Qty, Acc) ->
     seed_with_state(NewSeedState, Probability, Qty-1, [a | Acc]);
 
 seed_with_state(undefined, Probability, Qty, Acc) ->
@@ -303,7 +306,7 @@ alloc_key(UId, ExpId) -> {UId, ExpId}.
 -spec variant(UId, ExpId, State) -> Result when
     UId         :: uid(),
     ExpId       :: experiment_id(),
-    State       :: erlexp_state(),
+    State       :: undefined | erlexp_state(),
     Result      :: variant().
 
 variant(UId, ExpId, State) ->
@@ -318,7 +321,7 @@ variant(UId, ExpId, State) ->
     Allocations :: [allocations()],
     UId         :: uid(),
     ExpId       :: experiment_id(),
-    State       :: erlexp_state(),
+    State       :: undefined | erlexp_state(),
     Result      :: variant().
 
 variant([#allocations{variant = Variant}], _UId, _ExpId, _State) -> Variant;

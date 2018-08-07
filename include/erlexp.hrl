@@ -8,7 +8,9 @@
 -type seed_msg()        :: {seed, experiment_id(), {rand:state(), [variant()]}}.
 
 -type variant()         :: a | b.
--type alloc_rate()      :: 0..1.
+-type alloc_rate()      :: float() | 0 | 1.
+
+-type match_spec()      :: '$1' | '$2' | '_'.
 
 -type start_options()   :: #{
     'transport_module'              => module(),
@@ -41,12 +43,12 @@
 
 % record for keeping experiments
 -record(experiments, {
-        id                          :: experiment_id(),
-        active                      :: boolean(),
-        b_probability               :: alloc_rate(),
-        last_seed_state = undefined :: undefined | rand:state(),
-        current_v_qty               :: non_neg_integer(),
-        variants                    :: [variant()]
+        id                          :: experiment_id()          | match_spec(),
+        active                      :: boolean()                | match_spec(),
+        b_probability               :: alloc_rate()             | match_spec(),
+        last_seed_state = undefined :: undefined | rand:state() | match_spec(),
+        current_v_qty               :: non_neg_integer()        | match_spec(),
+        variants                    :: [variant()]              | match_spec()
     }).
 -type experiments()                 :: #experiments{}.
 

@@ -39,7 +39,7 @@ SHELL_DEPS = sync
 # Development enviroment for TDD ("make shell" to run it).
 # --------------------------------------------------------------------
 
-SHELL_OPTS = -kernel shell_history enabled -args_file vm.args.development -config sys.config -pa ebin/ test/ -eval 'lager:start(), mlibs:discover()' -env ERL_LIBS deps -run mlibs autotest_on_compile
+SHELL_OPTS = -kernel shell_history enabled -pa ebin/ test/ -eval 'lager:start(), mlibs:discover()' -env ERL_LIBS deps -run mlibs autotest_on_compile
 
 # --------------------------------------------------------------------
 # We using erlang.mk 

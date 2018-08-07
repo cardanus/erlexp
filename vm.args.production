@@ -1,6 +1,0 @@
--setcookie 12345678901234567890I
--sname erlexp
-+c true 
-+C multi_time_warp
--smp enable
--mode embedded
