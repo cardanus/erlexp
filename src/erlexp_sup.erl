@@ -4,12 +4,18 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/1]).
+-export([start_link/0, start_link/1]).
 
 %% Supervisor callbacks
 -export([init/1]).
 
 -define(SERVER, ?MODULE).
+
+% @doc start root supervisor
+-spec start_link() -> Result when
+    Result  :: 'ignore' | {'error',_} | {'ok',pid()}.
+
+start_link() -> start_link(#{}).
 
 % @doc start root supervisor
 -spec start_link(Options) -> Result when
@@ -29,7 +35,7 @@ init(Options) ->
 
     ErlExp = {
         erlexp,
-        {erlexp, start, Options},
+        {erlexp, start, [Options]},
         permanent,
         5000,
         worker,

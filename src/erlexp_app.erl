@@ -13,8 +13,8 @@
     Args        :: term(),
     Result      :: {'ok', pid()} | {'ok', pid(), State :: term()} | {'error', Reason :: term()}.
 
-start(normal, _StartArgs) ->
-    erlexp_sup:start_link(#{register => erlexp}).
+start(normal, StartArgs) ->
+    erlexp_sup:start_link().
 
 % @doc stop application
 -spec stop(State) -> Result when
