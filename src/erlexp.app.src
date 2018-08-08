@@ -4,7 +4,7 @@
     {id, "erlexp"}, 
     {modules, []},
     {registered, [erlexp]},
-    {applications, [kernel, stdlib, lager, sasl]},
+    {applications, [kernel, stdlib, sasl]},
     {included_applications, []},
     {mod, {erlexp_app, []}},
     {env, []}

@@ -17,7 +17,7 @@
 -define(SEED_SERVER, erlexp_seeder).
 
 -include("erlexp.hrl").
--include("deps/teaser/include/utils.hrl").
+-include("loger_macroses.hrl").
 
 % gen server is here
 -behaviour(gen_server).
@@ -30,7 +30,8 @@
 -export([
         start/1, stop/1, stop/2,
         seed/1,
-        variant/2
+        variant/2,
+        set/2
     ]).
 
 -export_type([start_options/0]).
@@ -43,7 +44,7 @@
     Error       :: {already_started, Pid} | term().
 
 start(Options) ->
-    gen_server:start_link({'local', ?MODULE}, ?MODULE, Options, []).
+    gen_server:start_link({'local', ?SERVER}, ?MODULE, Options, []).
 
 % @doc API for stop gen_server. Default is sync call.
 -spec stop(Server) -> Result when
@@ -72,6 +73,14 @@ stop('async', Server) ->
 variant(UId, ExpId) ->
     variant(UId, ExpId, undefined).
 
+-spec set(ExpId, ExpSettings) -> Result when
+    ExpId       :: experiment_id(),
+    ExpSettings :: exp_settings(),
+    Result      :: ok.
+
+set(ExpId, ExpSetting) ->
+    gen_server:call(?SERVER, {'set', ExpId, ExpSetting}).
+
 % ============================ gen_server part =================================
 
 -spec init(Options) -> Result when
@@ -81,9 +90,10 @@ variant(UId, ExpId) ->
 init(Options) ->
     SeedFreq = maps:get('seed_freq', Options, 1000),
     State = #erlexp_state{
+            auto_discover = maps:get('auto_discover', Options, true),
             seed_freq = SeedFreq,
             seed_qty = maps:get('seed_qty', Options, 1000),
-            seed_threshold_upper = maps:get('seed_threshold_upper', Options, 100000),
+            seed_threshold_upper = maps:get('seed_threshold_upper', Options, 10000),
             seed_threshold_lower = maps:get('seed_threshold_lower', Options, 500),
             self_pid = self(),
             alloc_ets = ets:new(?ETS_ALLOC_NAME, [set, ?ETSOPT, {keypos, #allocations.alloc_key}, named_table]),
@@ -105,6 +115,10 @@ init(Options) ->
     State       :: erlexp_state(),
     Result      :: {reply, term(), State}.
 
+handle_call({'set', ExpId, ExpSetting}, _From, State) ->
+    _ = set(ExpId, ExpSetting, State),
+    {reply, ok, State};
+
 handle_call({'allocate', UId, ExpId}, _From, State) ->
     {reply, variant(UId, ExpId, State), State};
 
@@ -123,16 +137,30 @@ handle_call(Msg, _From, State) ->
     State   :: erlexp_state(),
     Result  :: {noreply, State} | {stop, normal, State}.
 
-% handle_cast for seed
-handle_cast({seed, ExpId, {NewSeedState, Variants}},#erlexp_state{exps_ets = Ets} = State) ->
-    [Experiment] = ets:lookup(Ets, ExpId),
-    NewVariants = lists:foldl(fun(Variant, Acc) -> [Variant | Acc] end, Experiment#experiments.variants, Variants),
-    ets:insert(Ets,
-        Experiment#experiments{
-          variants = NewVariants,
-          last_seed_state = NewSeedState,
-          current_v_qty = length(NewVariants)
-    }),
+% handle_cast for seed.
+% we ignoring varints if seed_state already changed
+handle_cast({seed, ExpId, {NewSeedState, Variants}, OldSeedState},#erlexp_state{exps_ets = Ets} = State) ->
+    _ = case ets:lookup(Ets, ExpId) of
+        [#experiments{last_seed_state = OldSeedState} = Experiment] ->
+            NewVariants = lists:foldl(fun(Variant, Acc) -> [Variant | Acc] end, Experiment#experiments.variants, Variants),
+            ets:insert(Ets,
+                Experiment#experiments{
+                  variants = NewVariants,
+                  last_seed_state = NewSeedState,
+                  current_v_qty = length(NewVariants)
+            });
+        _ ->
+            false
+    end,
+    {noreply, State};
+
+% when we support auto_discovering we set the experiment
+handle_cast({auto_discover, ExpId}, #erlexp_state{auto_discover = true} = State) ->
+    _ = set(ExpId, #{}, State),
+    {noreply, State};
+
+% when we don't support auto_discovering for tests, we just ignore message
+handle_cast({auto_discover, _ExpId}, #erlexp_state{auto_discover = false} = State) ->
     {noreply, State};
 
 % handle_cast for stop
@@ -198,37 +226,37 @@ code_change(_OldVsn, State, _Extra) ->
 % so, we avoiding collision here just by registering process.
 -spec seed(State) -> Result when
     State       :: erlexp_state(),
-    Result      :: [] | [seed_msg()].
+    Result      :: [] | [ok].
 
 seed(#erlexp_state{seed_threshold_upper = ThrshUp, exps_ets = Ets} = State) ->
-%    try
+    try
         true = register(?SEED_SERVER, self()),  % fail here if we already running
-        MS = [{#experiments{current_v_qty = '$1', 'b_probability' = '$2', active = true, _ = '_'},
+        MS = [{#experiments{current_v_qty = '$1', 'b_probability' = '$2', status = active, _ = '_'},
                [{'andalso',
                     {'<', '$1', ThrshUp},
                     {'orelse',
-                        {'==', '$2', '0'},
-                        {'==', '$2', '1'}
+                        {'=/=', '$2', '0'},
+                        {'=/=', '$2', '1'}
                     }
                }],
             ['$_']
         }],
-        seed(ets:select(Ets, MS), State).
-%    catch
-%        Error ->
-%            ?error(Error)
-%    end.
+        seed(ets:select(Ets, MS), State)
+    catch
+        Error ->
+            ?error(Error)
+    end.
 
 
 -spec seed(Experiments, State) -> Result when
     Experiments :: [] | [experiments()],
     State       :: erlexp_state(),
-    Result      :: [] | [seed_msg()].
+    Result      :: [] | [ok].
 
 seed(Experiments, #erlexp_state{seed_qty = Qty, self_pid = SelfPid}) ->
     lists:map(fun
         (#experiments{id = ExpId, b_probability = Probability, last_seed_state = SeedState}) ->
-            SelfPid ! {seed, ExpId, seed_with_state(SeedState, Probability, Qty, [])}
+            gen_server:cast(SelfPid, {seed, ExpId, seed_with_state(SeedState, Probability, Qty, []), SeedState})
         end,
     Experiments).
 
@@ -262,6 +290,66 @@ seed_with_state(NewSeedState, _Probability, 0, Acc) -> {NewSeedState, Acc};
 
 seed_with_state(State, Probability, Qty, Acc) ->
     seed_with_state(rand:uniform_real_s(State), Probability, Qty, Acc).
+
+% @doc set settings for experiment
+-spec set(ExpId, ExpSettings, State) -> Result when
+    ExpId       :: experiment_id(),
+    ExpSettings :: exp_settings(),
+    State       :: erlexp_state(),
+    Result      :: true.
+
+set(ExpId, ExpSettings, #erlexp_state{exps_ets = Ets} = State) ->
+    Experiment = ets:lookup(Ets, ExpId),
+    ets:insert(Ets,
+        should_update_variants(
+            Experiment,
+            gen_or_update_exp(ExpId, ExpSettings, Experiment),
+            State
+        )
+    ).
+
+% @doc generate new or update experiment
+-spec gen_or_update_exp(ExpId, ExpSettings, ExpFromEts) -> Result when
+    ExpId       :: experiment_id(),
+    ExpSettings :: exp_settings(),
+    ExpFromEts  :: [] | [experiments()],
+    Result      :: experiments().
+
+gen_or_update_exp(ExpId, ExpSettings, []) ->
+    #experiments{
+       id = ExpId,
+       status = maps:get(status, ExpSettings, active),
+       b_probability = maps:get(b_probability, ExpSettings, 0.5)
+    };
+
+gen_or_update_exp(_ExpId, ExpSettings, [Exp]) ->
+    Exp#experiments{
+       status = maps:get(status, ExpSettings, Exp#experiments.status),
+       b_probability = maps:get(b_probability, ExpSettings, Exp#experiments.b_probability)
+    }.
+
+% @doc we have to reset variants if we are going to change probability rate
+-spec should_update_variants(OldExperiment, NewExperiment, State) -> Result when
+    OldExperiment   :: [] | [experiments()],
+    NewExperiment   :: experiments(),
+    State           :: erlexp_state(),
+    Result          :: experiments().
+
+should_update_variants([], Experiment, _State) -> Experiment;
+should_update_variants(
+    [#experiments{b_probability = SameBP}],
+    #experiments{b_probability = SameBP} = Experiment,
+    _State
+) ->
+    Experiment;
+
+should_update_variants(
+    _OldExperiment,
+    #experiments{b_probability = Probability, last_seed_state = SeedState} = Experiment,
+    #erlexp_state{seed_qty = Qty}
+) ->
+    {NewSeedState, Variants} = seed_with_state(SeedState, Probability, Qty, []),
+    Experiment#experiments{last_seed_state = NewSeedState, variants = Variants}.
 
 %% @doc function for adapt number to probability rate.
 %% The main idea that we can define probability in percent (eg 10%). It should
@@ -312,35 +400,62 @@ alloc_key(UId, ExpId) -> {UId, ExpId}.
 variant(UId, ExpId, State) ->
     variant(
       ets:lookup(?ETS_ALLOC_NAME, alloc_key(UId, ExpId)),
+      ets:lookup(?ETS_EXPS_NAME, ExpId),
       UId,
       ExpId,
       State
      ).
 
--spec variant(Allocations, UId, ExpId, State) -> Result when
+-spec variant(Allocations, Experiment, UId, ExpId, State) -> Result when
     Allocations :: [allocations()],
+    Experiment  :: [experiments()],
     UId         :: uid(),
     ExpId       :: experiment_id(),
     State       :: undefined | erlexp_state(),
     Result      :: variant().
 
-variant([#allocations{variant = Variant}], _UId, _ExpId, _State) -> Variant;
+% when experiment is not yet active (disabled) we always returning "a"
+variant(_Allocation, [#experiments{status = disabled}], _UId, _ExpId, _State) -> a;
 
-variant([], UId, ExpId, State) ->
-    case ets:lookup(?ETS_EXPS_NAME, ExpId) of
-        [] -> a;
-        [#experiments{active = false}] -> a;
-        _ when State =:= undefined ->
-            gen_server:call(?SERVER, {'allocate', UId, ExpId});
-        [#experiments{b_probability = 0}] ->
-            stick(UId, ExpId, a, State);
-        [#experiments{b_probability = 1}] ->
-            stick(UId, ExpId, b, State);
-        [#experiments{variants = [Variant|T], current_v_qty = Qty} = Experiment] ->
-            ets:insert(State#erlexp_state.exps_ets, Experiment#experiments{variants = T, current_v_qty = Qty-1}),
-            stick(UId, ExpId, Variant, State)
-    end.
+% when experiment "canceled" we always force "a" even if it was allocated before as "b"
+variant(_Allocation, [#experiments{status = canceled}], _UId, _ExpId, _State) -> a;
 
+% The difference here between "disabled" and "canceled" is that when we perorm statistical calculation we have to
+% exclude trafic with this experiment for experiments with the same goal because it may affect each other.
+
+% when experiment integrated we always force "b" even if it was allocated before as "a"
+variant(_Allocation, [#experiments{status = integrated}], _UId, _ExpId, _State) -> b;
+
+% if allocation happend before and experiment not canceled, we returning allocated variant
+variant([#allocations{variant = Variant}], _Experiment, _UId, _ExpId, _State) -> Variant;
+
+% if allocation not yet happend and experiment not found, we returning "a" but try to perform auto_discovering
+variant([], [], _UId, ExpId, undefined) ->
+    gen_server:cast(?SERVER, {auto_discover, ExpId}),
+    a;
+
+% if experiment found but not yet allocated to user, we perform allocation
+variant([], [#experiments{}], UId, ExpId, undefined) ->
+    gen_server:call(?SERVER, {'allocate', UId, ExpId});
+
+% if experiment found with b_probability 0% we stick to "a"
+variant([], [#experiments{status = active, b_probability = 0}], UId, ExpId, State) ->
+    stick(UId, ExpId, a, State);
+
+% if experiment found with b_probability 100% we stick to "b"
+variant([], [#experiments{status = active, b_probability = 1}], UId, ExpId, State) ->
+    stick(UId, ExpId, b, State);
+
+% if experiment found but variants still empty we returning "a"
+variant([], [#experiments{variants = [], b_probability = Probability}], _UId, ExpId, _State) ->
+    ?warning("Don't have variants for experiment ~p with probability ~p",[ExpId, Probability]),
+    a;
+
+variant([], [#experiments{variants = [Variant|T], current_v_qty = Qty} = Experiment], UId, ExpId, State) ->
+    ets:insert(State#erlexp_state.exps_ets, Experiment#experiments{variants = T, current_v_qty = Qty-1}),
+    stick(UId, ExpId, Variant, State).
+
+% @doc stick experiment to the customer
 -spec stick(UId, ExpId, Variant, State) -> Result when
     UId         :: uid(),
     ExpId       :: experiment_id(),
@@ -351,7 +466,8 @@ variant([], UId, ExpId, State) ->
 stick(UId, ExpId, Variant, #erlexp_state{alloc_ets = Ets, transport_module = TransportModule}) ->
     ToStick = #allocations{alloc_key = alloc_key(UId, ExpId), variant = Variant},
     ets:insert_new(Ets, ToStick),
-    erlang:spawn(TransportModule, ?FUNCTION_NAME, [ToStick]),
+    TransportModule,
+%    erlang:spawn(TransportModule, ?FUNCTION_NAME, [ToStick]),
     Variant.
 
 % ------------------------------- end of internals -----------------------------
