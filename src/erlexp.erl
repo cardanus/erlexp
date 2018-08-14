@@ -17,7 +17,7 @@
 -define(SEED_SERVER, erlexp_seeder).
 
 -include("erlexp.hrl").
--include("loger_macroses.hrl").
+-include("logger_macroses.hrl").
 
 % gen server is here
 -behaviour(gen_server).
