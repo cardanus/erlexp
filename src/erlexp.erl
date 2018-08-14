@@ -90,11 +90,27 @@ set(ExpId, ExpSetting) ->
 init(Options) ->
     SeedFreq = maps:get('seed_freq', Options, 1000),
     State = #erlexp_state{
-            auto_discover = maps:get('auto_discover', Options, true),
+            auto_discover = maps:get(
+                'auto_discover', Options,
+                application:get_env(?MODULE, auto_discover, true)
+            ),
             seed_freq = SeedFreq,
-            seed_qty = maps:get('seed_qty', Options, 1000),
-            seed_threshold_upper = maps:get('seed_threshold_upper', Options, 10000),
-            seed_threshold_lower = maps:get('seed_threshold_lower', Options, 500),
+            seed_qty = maps:get(
+                'seed_qty', Options,
+                application:get_env(?MODULE, seed_qty, 1000)
+            ),
+            seed_threshold_upper = maps:get(
+                'seed_threshold_upper', Options,
+                application:get_env(?MODULE, seed_threshold_upper, 10000)
+            ),
+            seed_threshold_lower = maps:get(
+                'seed_threshold_lower', Options,
+                application:get_env(?MODULE, 'seed_threshold_lower', 500)
+            ),
+            transport_module = maps:get(
+                'transport_module', Options,
+                application:get_env(?MODULE, 'transport_module', ?MODULE)
+            ),
             self_pid = self(),
             alloc_ets = ets:new(?ETS_ALLOC_NAME, [set, ?ETSOPT, {keypos, #allocations.alloc_key}, named_table]),
             exps_ets = ets:new(?ETS_EXPS_NAME, [set, ?ETSOPT, {keypos, #experiments.id}, named_table])

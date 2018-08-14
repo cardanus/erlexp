@@ -2,6 +2,6 @@
              [{description,"Erlang client for Cardanus platform"},
               {vsn,"0.0.1"},
               {modules,[]},
-              {registered, []},
+              {registered,[]},
               {applications,[kernel,stdlib]},
               {env,[]}]}.
